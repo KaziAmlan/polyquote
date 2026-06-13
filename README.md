@@ -32,7 +32,7 @@ Product concept, PRD, and interactive prototype by Amlan Kazi.
 
 ## Try the prototype
 
-**Live:** polyquote-prototype.html
+**Live:**
 
 **Locally:** download `polyquote-prototype.html` and double-click it. That's it.
 
