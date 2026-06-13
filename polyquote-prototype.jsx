@@ -1,0 +1,763 @@
+import { useState, useMemo, useEffect } from "react";
+
+/* ────────────────────────────────────────────────────────────
+   PolyQuote — interactive prototype v0.2
+   Seller-side: quote builder · briefings · approvals
+   Customer surfaces: quote link · briefing email (white-label)
+   Swiss-modern system · Helvetica · single cobalt accent
+   ──────────────────────────────────────────────────────────── */
+
+const PRODUCTS = {
+  pp:   { name: "PP Homopolymer · Raffia",  hts: "3902.10.00", fob: 1180, mfn: 6.5, s301: 25.0, s122: 15.0, adcvd: false, bench: "CFR FE Asia 1,205 $/MT" },
+  hdpe: { name: "HDPE · Blow Molding",      hts: "3901.20.00", fob: 1090, mfn: 6.5, s301: 25.0, s122: 15.0, adcvd: false, bench: "CFR FE Asia 1,118 $/MT" },
+  lldpe:{ name: "LLDPE · Film C4",          hts: "3901.10.50", fob: 1135, mfn: 6.5, s301: 25.0, s122: 15.0, adcvd: false, bench: "CFR FE Asia 1,162 $/MT" },
+  pvc:  { name: "PVC · SG-5 Suspension",    hts: "3904.10.00", fob: 905,  mfn: 6.5, s301: 25.0, s122: 15.0, adcvd: false, bench: "CFR India 938 $/MT" },
+  pet:  { name: "PET · Bottle Grade",       hts: "3907.61.00", fob: 1010, mfn: 6.5, s301: 25.0, s122: 15.0, adcvd: true,  bench: "CFR FE Asia 1,041 $/MT" },
+};
+
+const WARM = [
+  { id: 1, who: "Wei Chen",      org: "Golden State Packaging · Ontario, CA",     sig: "Opened 2× · clicked “PP raffia landed impact” · 7:42 AM", heat: "hot",  product: "pp" },
+  { id: 2, who: "Maria Delgado", org: "Riverside Poly Converters · Riverside, CA", sig: "Opened · clicked “§122 timeline” · 8:05 AM",              heat: "warm", product: "lldpe" },
+  { id: 3, who: "Sam Okafor",    org: "Maverick Containers · Phoenix, AZ",         sig: "Opened 1× · no clicks · 6:58 AM",                          heat: "warm", product: "hdpe" },
+  { id: 4, who: "Rina Mehta",    org: "SunWest Rotomolding · Tucson, AZ",          sig: "Opened yesterday’s 3× · today not yet opened",             heat: "cool", product: "lldpe" },
+  { id: 5, who: "Justin Park",   org: "Cascade Films · Tacoma, WA",                sig: "Not opened yet",                                            heat: "cool", product: "pp" },
+];
+
+const fmt = (n, d = 0) =>
+  n.toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
+
+export default function PolyQuote() {
+  const [screen, setScreen] = useState("quote");
+  const [productKey, setProductKey] = useState("pp");
+  const [customer, setCustomer] = useState("Golden State Packaging");
+  const [qty, setQty] = useState(102);
+  const [fob, setFob] = useState(PRODUCTS.pp.fob);
+  const [freight, setFreight] = useState(145);
+  const [surcharge, setSurcharge] = useState(38);
+  const [offer, setOffer] = useState(2080);
+  const [validity, setValidity] = useState(48);
+  const [sent, setSent] = useState(false);
+
+  /* approvals state */
+  const [alertResolved, setAlertResolved] = useState(false);
+  const [appr, setAppr] = useState({ 2148: "pending", 2151: "pending" });
+  const [comment, setComment] = useState("");
+  const pendingCount = Object.values(appr).filter((s) => s === "pending").length;
+
+  /* buyer view state */
+  const [accepted, setAccepted] = useState(false);
+  const [refreshAsked, setRefreshAsked] = useState(false);
+  const expiryAt = useMemo(() => Date.now() + (47 * 3600 + 13 * 60 + 36) * 1000, []);
+  const [nowTs, setNowTs] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNowTs(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+  const remain = Math.max(0, Math.floor((expiryAt - nowTs) / 1000));
+  const rH = Math.floor(remain / 3600);
+  const rM = Math.floor((remain % 3600) / 60);
+  const rS = remain % 60;
+
+  const p = PRODUCTS[productKey];
+
+  const calc = useMemo(() => {
+    const dutyPct = p.mfn + p.s301 + p.s122;
+    const dutyMfn = (fob * p.mfn) / 100;
+    const duty301 = (fob * p.s301) / 100;
+    const duty122 = (fob * p.s122) / 100;
+    const duties = dutyMfn + duty301 + duty122;
+    const frt = freight + surcharge;
+    const ins = fob * 0.003;
+    const landed = fob + duties + frt + ins;
+    const perLb = landed / 2204.62;
+    const margin = offer > 0 ? ((offer - landed) / offer) * 100 : 0;
+    const total = offer * qty;
+    const trailing = 2114;
+    const dev = ((offer - trailing) / trailing) * 100;
+    return { dutyPct, dutyMfn, duty301, duty122, duties, frt, ins, landed, perLb, margin, total, trailing, dev };
+  }, [p, fob, freight, surcharge, offer, qty]);
+
+  const FLOOR = 6.0;
+  const belowFloor = calc.margin < FLOOR;
+
+  const pickProduct = (k) => { setProductKey(k); setFob(PRODUCTS[k].fob); setSent(false); };
+
+  const startQuoteFor = (row) => {
+    pickProduct(row.product);
+    setCustomer(row.org ? row.org.split(" · ")[0] : "Golden State Packaging");
+    setScreen("quote");
+    setSent(false);
+  };
+
+  const quoteFromEmail = (prodKey) => {
+    pickProduct(prodKey);
+    setCustomer("Golden State Packaging");
+    setScreen("quote");
+    setSent(false);
+  };
+
+  const seg = (v) => (v / calc.landed) * 100;
+
+  const NavItem = ({ id, children, badge }) => (
+    <button className={`rail-item ${screen === id ? "on" : ""}`} onClick={() => setScreen(id)}>
+      {children}
+      {badge ? <span className="badge">{badge}</span> : null}
+    </button>
+  );
+
+  return (
+    <div className="pq">
+      <style>{`
+        .pq, .pq * { box-sizing: border-box; margin: 0; padding: 0; }
+        .pq {
+          --ink: #0E0F11; --paper: #F6F6F3; --card: #FFFFFF; --line: #E4E4DD; --mut: #6F6F68;
+          --blue: #1D3DF0; --blue-2: #5A72F5; --blue-3: #B9C4FB;
+          --green: #0B7A4B; --amber: #B45309; --hot: #E8590C;
+          font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+          background: var(--paper); color: var(--ink); min-height: 100vh; display: flex;
+          font-size: 14px; -webkit-font-smoothing: antialiased;
+        }
+        .pq button { font-family: inherit; cursor: pointer; }
+        .pq input, .pq select, .pq textarea { font-family: inherit; }
+        .pq :focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+        @media (prefers-reduced-motion: reduce) { .pq * { transition: none !important; animation: none !important; } }
+
+        /* ── rail ── */
+        .rail { width: 208px; flex-shrink: 0; background: var(--ink); color: #fff; display: flex; flex-direction: column;
+                padding: 28px 0 20px; position: sticky; top: 0; height: 100vh; }
+        .brand { display: flex; align-items: center; gap: 9px; padding: 0 22px 26px; }
+        .brand-mark { width: 16px; height: 16px; background: var(--blue); flex-shrink: 0; }
+        .brand-name { font-weight: 700; letter-spacing: -0.02em; font-size: 16px; }
+        .rail-label { font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: #8a8a85; padding: 14px 22px 8px; }
+        .rail-item { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; background: none; border: none;
+          color: #c9c9c4; padding: 10px 22px; font-size: 13.5px; border-left: 2px solid transparent; transition: color .15s, background .15s; }
+        .rail-item:hover { color: #fff; }
+        .rail-item.on { color: #fff; border-left-color: var(--blue); background: rgba(255,255,255,0.05); font-weight: 600; }
+        .badge { background: var(--hot); color: #fff; font-size: 10px; font-weight: 700; min-width: 17px; height: 17px;
+          border-radius: 9px; display: inline-flex; align-items: center; justify-content: center; padding: 0 5px; }
+        .rail-foot { margin-top: auto; padding: 16px 22px 0; border-top: 1px solid #2a2b2e; }
+        .rail-foot .mono { color: #8a8a85; font-size: 10.5px; line-height: 1.7; }
+        .vdot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #34d399; margin-right: 6px; }
+
+        /* ── main ── */
+        .main { flex: 1; min-width: 0; }
+        .topbar { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 8px;
+          padding: 26px 34px 18px; border-bottom: 1px solid var(--line); }
+        .h1 { font-size: 21px; font-weight: 700; letter-spacing: -0.025em; }
+        .topmeta { font-size: 12px; color: var(--mut); }
+        .screen { padding: 26px 34px 60px; }
+        .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+        .lbl { font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--mut); font-weight: 600; }
+
+        /* ── quote grid ── */
+        .qgrid { display: grid; grid-template-columns: minmax(300px, 420px) minmax(360px, 1fr); gap: 22px; align-items: start; }
+        .panel { background: var(--card); border: 1px solid var(--line); }
+        .panel-h { padding: 16px 20px 12px; border-bottom: 1px solid var(--line); display:flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+        .panel-t { font-size: 13px; font-weight: 700; }
+        .panel-b { padding: 18px 20px 20px; }
+        .field { margin-bottom: 16px; }
+        .field label { display: block; margin-bottom: 6px; }
+        .in { width: 100%; border: 1px solid var(--line); background: #fff; padding: 9px 11px; font-size: 14px; color: var(--ink); border-radius: 0; appearance: none; }
+        .in:hover { border-color: #c8c8c0; }
+        .in:focus { border-color: var(--blue); outline: none; }
+        .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+        .suffix { font-size: 11px; color: var(--mut); margin-top: 4px; }
+        .segctl { display: flex; border: 1px solid var(--line); }
+        .segctl button { flex: 1; background: #fff; border: none; padding: 9px 0; font-size: 12.5px; color: var(--mut);
+          border-right: 1px solid var(--line); transition: background .15s, color .15s; }
+        .segctl button:last-child { border-right: none; }
+        .segctl button.on { background: var(--ink); color: #fff; font-weight: 600; }
+        .flag { margin-top: 14px; padding: 10px 12px; font-size: 12px; line-height: 1.5; background: #FFF7ED; border: 1px solid #FDBA74; color: #7C2D12; }
+
+        /* ── tape ── */
+        .bignum { font-size: 44px; font-weight: 700; letter-spacing: -0.04em; font-variant-numeric: tabular-nums; line-height: 1; }
+        .bignum small { font-size: 15px; font-weight: 500; letter-spacing: 0; color: var(--mut); margin-left: 6px; }
+        .perlb { font-size: 13px; color: var(--mut); margin-top: 7px; font-variant-numeric: tabular-nums; }
+        .costbar { display: flex; height: 16px; margin: 20px 0 10px; }
+        .costbar div { height: 100%; min-width: 2px; }
+        .legend { display: flex; flex-wrap: wrap; gap: 14px 18px; margin-bottom: 6px; }
+        .lg { display: flex; align-items: center; gap: 7px; font-size: 11.5px; color: var(--mut); font-variant-numeric: tabular-nums; }
+        .sw { width: 9px; height: 9px; flex-shrink: 0; }
+        .tape { border-top: 1px solid var(--line); margin-top: 14px; }
+        .trow { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 10px 0;
+          border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+        .trow .nm { font-size: 13px; }
+        .trow .vl { font-size: 13.5px; font-weight: 600; white-space: nowrap; }
+        .chip { display: inline-block; margin-left: 8px; padding: 2px 6px; font-size: 9.5px; letter-spacing: 0.04em;
+          background: var(--paper); border: 1px solid var(--line); color: var(--mut); vertical-align: 1px; }
+        .trow.total { border-bottom: 2px solid var(--ink); }
+        .trow.total .nm, .trow.total .vl { font-weight: 700; font-size: 14px; }
+        .marginbox { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; padding: 14px 0 4px; }
+        .mval { font-size: 22px; font-weight: 700; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; }
+        .ok { color: var(--green); } .bad { color: var(--hot); }
+        .dev { font-size: 12px; color: var(--mut); }
+        .cta { width: 100%; margin-top: 16px; padding: 14px 0; border: none; font-size: 14px; font-weight: 700; transition: background .15s; }
+        .cta.go { background: var(--blue); color: #fff; }
+        .cta.go:hover { background: #1733cc; }
+        .cta.hold { background: #FFF7ED; color: #7C2D12; border: 1px solid #FDBA74; }
+        .cta.done { background: var(--green); color: #fff; }
+        .cta-note { font-size: 11.5px; color: var(--mut); text-align: center; margin-top: 9px; line-height: 1.5; }
+        .linkbtn { display: block; width: 100%; margin-top: 10px; background: none; border: 1px solid var(--line);
+          padding: 11px 0; font-size: 12.5px; font-weight: 600; color: var(--ink); transition: border-color .15s; }
+        .linkbtn:hover { border-color: var(--ink); }
+
+        /* ── briefings ── */
+        .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 22px; }
+        .stat { background: var(--card); border: 1px solid var(--line); padding: 16px 18px 14px; }
+        .stat .v { font-size: 30px; font-weight: 700; letter-spacing: -0.035em; font-variant-numeric: tabular-nums; }
+        .stat .v em { font-style: normal; font-size: 14px; color: var(--mut); font-weight: 500; }
+        .stat .lbl { margin-top: 5px; }
+        .held { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap;
+          background: #FFF7ED; border: 1px solid #FDBA74; padding: 13px 16px; margin-bottom: 22px; font-size: 13px; color: #7C2D12; }
+        .held b { font-weight: 700; }
+        .held button { background: var(--ink); color: #fff; border: none; padding: 8px 14px; font-size: 12px; font-weight: 600; }
+        .held.green { background: #E8F5EE; border-color: #BBE3CD; color: #14532D; }
+        .wrow { display: flex; justify-content: space-between; align-items: center; gap: 14px;
+          background: var(--card); border: 1px solid var(--line); border-top: none; padding: 15px 18px; }
+        .wrow:first-of-type { border-top: 1px solid var(--line); }
+        .wleft { display: flex; align-items: flex-start; gap: 13px; min-width: 0; }
+        .dot { width: 10px; height: 10px; border-radius: 50%; margin-top: 5px; flex-shrink: 0; }
+        .dot.hot { background: var(--hot); box-shadow: 0 0 0 4px rgba(232,89,12,.14); }
+        .dot.warm { background: var(--amber); }
+        .dot.cool { background: #C9C9C2; }
+        .wname { font-weight: 700; font-size: 14px; }
+        .worg { font-size: 12px; color: var(--mut); margin-top: 2px; }
+        .wsig { font-size: 12px; margin-top: 6px; }
+        .wsig.dim { color: var(--mut); }
+        .qbtn { border: 1px solid var(--ink); background: #fff; padding: 8px 14px; font-size: 12px; font-weight: 700;
+          white-space: nowrap; transition: background .15s, color .15s; }
+        .qbtn:hover { background: var(--ink); color: #fff; }
+        .today { background: var(--card); border: 1px solid var(--line); padding: 18px 20px; margin-bottom: 22px; }
+        .today-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+        .today h3 { font-size: 14px; font-weight: 700; }
+        .pill { display: inline-block; padding: 3px 8px; font-size: 10px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
+        .pill.sentp { background: #E8F5EE; color: var(--green); border: 1px solid #BBE3CD; }
+        .pill.pend { background: #FFF7ED; color: #B45309; border: 1px solid #FDBA74; }
+        .pill.ok { background: #E8F5EE; color: var(--green); border: 1px solid #BBE3CD; }
+        .pill.rej { background: #FEF2F2; color: #B91C1C; border: 1px solid #FECACA; }
+        .today p { font-size: 12.5px; color: var(--mut); margin-top: 8px; line-height: 1.6; max-width: 70ch; }
+        .today p b { color: var(--ink); font-weight: 600; }
+
+        /* ── approvals ── */
+        .acard { background: var(--card); border: 1px solid var(--line); padding: 18px 20px; margin-bottom: 16px; }
+        .ahead { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+        .aid { font-weight: 700; font-size: 14px; }
+        .ameta { font-size: 12.5px; color: var(--mut); margin-top: 6px; line-height: 1.7; }
+        .ameta b { color: var(--ink); font-weight: 600; }
+        .areason { margin-top: 10px; padding: 9px 12px; background: var(--paper); border-left: 2px solid var(--blue);
+          font-size: 12.5px; line-height: 1.5; }
+        .abtns { display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
+        .abtn { padding: 9px 18px; font-size: 12.5px; font-weight: 700; border: 1px solid var(--ink); background: var(--ink); color: #fff; }
+        .abtn.sec { background: #fff; color: var(--ink); }
+        .abtn.sec:hover { background: var(--paper); }
+        .cmt { width: 100%; margin-top: 12px; border: 1px solid var(--line); padding: 9px 11px; font-size: 13px; resize: vertical; min-height: 38px; }
+
+        /* ── customer surfaces (frames) ── */
+        .frame { background: var(--card); border: 1px solid var(--line); max-width: 720px; box-shadow: 0 1px 0 rgba(0,0,0,0.03); }
+        .framebar { display: flex; align-items: center; gap: 10px; background: #EDEDE8; border-bottom: 1px solid var(--line); padding: 9px 14px; }
+        .fdots { display: flex; gap: 5px; }
+        .fdots span { width: 9px; height: 9px; border-radius: 50%; background: #CFCFC8; }
+        .furl { flex: 1; background: #fff; border: 1px solid var(--line); font-size: 11px; color: var(--mut); padding: 5px 10px; }
+        .note { font-size: 11.5px; color: var(--mut); margin: 12px 0 0; max-width: 720px; line-height: 1.6; }
+        .sellerhead { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
+          padding: 22px 26px; border-bottom: 2px solid var(--ink); }
+        .sellermark { display: flex; align-items: center; gap: 9px; font-weight: 700; font-size: 15px; letter-spacing: -0.01em; }
+        .sellermark i { width: 14px; height: 14px; background: var(--ink); display: inline-block; font-style: normal; }
+        .qbody { padding: 22px 26px 26px; }
+        .countdown { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin: 4px 0 18px; }
+        .cd { font-size: 32px; font-weight: 700; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+        .cd.low { color: var(--hot); }
+        .buyrow { display: flex; justify-content: space-between; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--line);
+          font-size: 13px; font-variant-numeric: tabular-nums; }
+        .buyrow .vl { font-weight: 600; }
+        .buyrow.total { border-bottom: 2px solid var(--ink); }
+        .buyrow.total span { font-weight: 700; font-size: 14px; }
+        .dutynote { margin-top: 14px; padding: 11px 13px; background: var(--paper); font-size: 12px; line-height: 1.6; color: var(--mut); }
+        .dutynote b { color: var(--ink); }
+        .buybtns { display: flex; gap: 10px; margin-top: 18px; flex-wrap: wrap; }
+        .buybtn { flex: 1; min-width: 180px; padding: 13px 0; font-size: 13.5px; font-weight: 700; border: none; background: var(--ink); color: #fff; }
+        .buybtn.sec { background: #fff; color: var(--ink); border: 1px solid var(--ink); }
+        .buybtn.done { background: var(--green); }
+        .buybtn:disabled { cursor: default; }
+
+        /* ── email ── */
+        .mailhead { padding: 14px 20px; border-bottom: 1px solid var(--line); font-size: 12px; color: var(--mut); line-height: 1.9; }
+        .mailhead b { color: var(--ink); font-weight: 600; }
+        .mailbody { padding: 22px 26px 26px; }
+        .mailbody .hi { font-size: 13.5px; line-height: 1.6; margin-bottom: 18px; max-width: 60ch; }
+        .mline { border: 1px solid var(--line); padding: 14px 16px; margin-bottom: 12px; }
+        .mline-h { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+        .mline-h b { font-size: 13.5px; }
+        .delta { font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; }
+        .delta.down { color: var(--green); }
+        .delta.flat { color: var(--mut); }
+        .mline p { font-size: 12.5px; color: var(--mut); line-height: 1.6; margin-top: 6px; }
+        .getq { margin-top: 10px; background: none; border: none; color: var(--blue); font-size: 12.5px; font-weight: 700; padding: 0; }
+        .getq:hover { text-decoration: underline; }
+        .mailfoot { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); font-size: 11px; color: var(--mut); line-height: 1.8; }
+
+        @media (max-width: 880px) {
+          .pq { flex-direction: column; }
+          .rail { width: 100%; height: auto; position: static; flex-direction: row; flex-wrap: wrap; align-items: center; padding: 12px 14px; gap: 2px; }
+          .brand { padding: 0 12px 0 0; }
+          .rail-label, .rail-foot { display: none; }
+          .rail-item { width: auto; padding: 8px 10px; border-left: none; border-bottom: 2px solid transparent; font-size: 12.5px; }
+          .rail-item.on { border-bottom-color: var(--blue); background: none; }
+          .topbar, .screen { padding-left: 18px; padding-right: 18px; }
+          .qgrid { grid-template-columns: 1fr; }
+          .stats { grid-template-columns: 1fr 1fr; }
+          .wrow { flex-direction: column; align-items: stretch; }
+          .qbtn { align-self: flex-start; }
+        }
+      `}</style>
+
+      {/* ── left rail ── */}
+      <nav className="rail">
+        <div className="brand">
+          <span className="brand-mark" />
+          <span className="brand-name">PolyQuote</span>
+        </div>
+        <div className="rail-label" style={{ paddingTop: 0 }}>Rep workspace</div>
+        <NavItem id="quote">Quote builder</NavItem>
+        <NavItem id="brief">Client briefings</NavItem>
+        <NavItem id="approve" badge={pendingCount || null}>Approvals</NavItem>
+        <div className="rail-label">Customer surfaces</div>
+        <NavItem id="buyer">Quote link</NavItem>
+        <NavItem id="email">Briefing email</NavItem>
+        <div className="rail-foot">
+          <div className="mono">
+            <span className="vdot" />RATES VERIFIED 06:00 PT<br />HTSUS Rev.4 · FR 2026-10571<br />FRI JUN 12 2026
+          </div>
+        </div>
+      </nav>
+
+      <div className="main">
+        {/* ════════════ QUOTE BUILDER ════════════ */}
+        {screen === "quote" && (
+          <>
+            <div className="topbar">
+              <h1 className="h1">Quote builder</h1>
+              <span className="topmeta">China → US corridor · duties assessed on FOB customs value</span>
+            </div>
+            <div className="screen">
+              <div className="qgrid">
+                <section className="panel">
+                  <div className="panel-h">
+                    <span className="panel-t">Deal inputs</span>
+                    <span className="mono" style={{ fontSize: 10.5, color: "var(--mut)" }}>HTS {p.hts} · CN ORIGIN</span>
+                  </div>
+                  <div className="panel-b">
+                    <div className="field">
+                      <label className="lbl" htmlFor="cust">Customer</label>
+                      <input id="cust" className="in" value={customer} onChange={(e) => { setCustomer(e.target.value); setSent(false); }} />
+                    </div>
+                    <div className="field">
+                      <label className="lbl" htmlFor="prod">Product</label>
+                      <select id="prod" className="in" value={productKey} onChange={(e) => pickProduct(e.target.value)}>
+                        {Object.entries(PRODUCTS).map(([k, v]) => (<option key={k} value={k}>{v.name}</option>))}
+                      </select>
+                      <div className="suffix">Benchmark · {p.bench}</div>
+                    </div>
+                    <div className="row2">
+                      <div className="field">
+                        <label className="lbl" htmlFor="qty">Quantity (MT)</label>
+                        <input id="qty" className="in" type="number" value={qty} min="1"
+                          onChange={(e) => { setQty(Number(e.target.value) || 0); setSent(false); }} />
+                        <div className="suffix">≈ {Math.max(1, Math.round(qty / 25.5))} × 40' FCL</div>
+                      </div>
+                      <div className="field">
+                        <label className="lbl" htmlFor="fob">FOB price ($/MT)</label>
+                        <input id="fob" className="in" type="number" value={fob}
+                          onChange={(e) => { setFob(Number(e.target.value) || 0); setSent(false); }} />
+                      </div>
+                    </div>
+                    <div className="row2">
+                      <div className="field">
+                        <label className="lbl" htmlFor="frt">Ocean freight ($/MT)</label>
+                        <input id="frt" className="in" type="number" value={freight}
+                          onChange={(e) => { setFreight(Number(e.target.value) || 0); setSent(false); }} />
+                      </div>
+                      <div className="field">
+                        <label className="lbl" htmlFor="sur">Surcharges ($/MT)</label>
+                        <input id="sur" className="in" type="number" value={surcharge}
+                          onChange={(e) => { setSurcharge(Number(e.target.value) || 0); setSent(false); }} />
+                        <div className="suffix">Hormuz rerouting premium included</div>
+                      </div>
+                    </div>
+                    <div className="field">
+                      <label className="lbl" htmlFor="offer">Your offer — DDP ($/MT)</label>
+                      <input id="offer" className="in" type="number" value={offer}
+                        onChange={(e) => { setOffer(Number(e.target.value) || 0); setSent(false); }} />
+                    </div>
+                    <div className="field" style={{ marginBottom: 0 }}>
+                      <label className="lbl">Quote validity</label>
+                      <div className="segctl" role="group" aria-label="Quote validity">
+                        {[24, 48, 72].map((h) => (
+                          <button key={h} className={validity === h ? "on" : ""} onClick={() => { setValidity(h); setSent(false); }}>{h} h</button>
+                        ))}
+                      </div>
+                    </div>
+                    {p.adcvd && (
+                      <div className="flag" role="alert">
+                        <b>AD/CVD exposure.</b> PET resin from China is covered by order A-570-024.
+                        Final duty depends on the producer — confirm with trade ops before sending.
+                      </div>
+                    )}
+                  </div>
+                </section>
+
+                <section className="panel">
+                  <div className="panel-h">
+                    <span className="panel-t">Landed cost · {customer || "—"}</span>
+                    <span className="mono" style={{ fontSize: 10.5, color: "var(--mut)" }}>RATES AS OF JUN 12 2026 06:00</span>
+                  </div>
+                  <div className="panel-b">
+                    <div className="bignum">{fmt(calc.landed)}<small>$/MT landed</small></div>
+                    <div className="perlb">{calc.perLb.toFixed(3)} $/lb · duty stack {calc.dutyPct.toFixed(1)}% of customs value</div>
+
+                    <div className="costbar" aria-hidden="true">
+                      <div style={{ width: `${seg(fob)}%`, background: "var(--ink)" }} />
+                      <div style={{ width: `${seg(calc.frt + calc.ins)}%`, background: "#9a9a93" }} />
+                      <div style={{ width: `${seg(calc.dutyMfn)}%`, background: "var(--blue-3)" }} />
+                      <div style={{ width: `${seg(calc.duty301)}%`, background: "var(--blue-2)" }} />
+                      <div style={{ width: `${seg(calc.duty122)}%`, background: "var(--blue)" }} />
+                    </div>
+                    <div className="legend">
+                      <span className="lg"><span className="sw" style={{ background: "var(--ink)" }} />FOB {fmt(fob)}</span>
+                      <span className="lg"><span className="sw" style={{ background: "#9a9a93" }} />Freight+ins {fmt(calc.frt + calc.ins)}</span>
+                      <span className="lg"><span className="sw" style={{ background: "var(--blue-3)" }} />MFN {fmt(calc.dutyMfn)}</span>
+                      <span className="lg"><span className="sw" style={{ background: "var(--blue-2)" }} />§301 {fmt(calc.duty301)}</span>
+                      <span className="lg"><span className="sw" style={{ background: "var(--blue)" }} />§122 {fmt(calc.duty122)}</span>
+                    </div>
+
+                    <div className="tape">
+                      <div className="trow"><span className="nm">FOB goods value</span><span className="vl">{fmt(fob)} $/MT</span></div>
+                      <div className="trow"><span className="nm">MFN base duty · {p.mfn}%<span className="chip mono">HTSUS Rev.4</span></span><span className="vl">{fmt(calc.dutyMfn, 1)} $/MT</span></div>
+                      <div className="trow"><span className="nm">Section 301 · {p.s301}%<span className="chip mono">USTR List 3</span></span><span className="vl">{fmt(calc.duty301, 1)} $/MT</span></div>
+                      <div className="trow"><span className="nm">Section 122 stopgap · {p.s122}%<span className="chip mono">EFF MAR 2026</span></span><span className="vl">{fmt(calc.duty122, 1)} $/MT</span></div>
+                      <div className="trow"><span className="nm">Ocean freight + surcharges</span><span className="vl">{fmt(calc.frt)} $/MT</span></div>
+                      <div className="trow"><span className="nm">Marine insurance · 0.3%</span><span className="vl">{fmt(calc.ins, 1)} $/MT</span></div>
+                      <div className="trow total"><span className="nm">Landed cost</span><span className="vl">{fmt(calc.landed)} $/MT</span></div>
+                    </div>
+
+                    <div className="marginbox">
+                      <div>
+                        <div className="lbl">Margin at offer</div>
+                        <div className={`mval ${belowFloor ? "bad" : "ok"}`}>{calc.margin.toFixed(1)}%</div>
+                      </div>
+                      <div style={{ textAlign: "right" }}>
+                        <div className="lbl">Deal total · {fmt(qty)} MT</div>
+                        <div className="mval">${fmt(calc.total)}</div>
+                      </div>
+                    </div>
+                    <div className="dev">
+                      Trailing 3 comparable quotes avg {fmt(calc.trailing)} $/MT — this offer is{" "}
+                      {Math.abs(calc.dev).toFixed(1)}% {calc.dev < 0 ? "below" : "above"}.
+                      {belowFloor && <> Margin floor is {FLOOR.toFixed(1)}%.</>}
+                    </div>
+
+                    {!sent && !belowFloor && (
+                      <button className="cta go" onClick={() => setSent(true)}>Send quote · valid {validity} h</button>
+                    )}
+                    {!sent && belowFloor && (
+                      <button className="cta hold" onClick={() => setSent(true)}>Below {FLOOR.toFixed(0)}% floor — send for manager approval</button>
+                    )}
+                    {sent && (
+                      <button className="cta done" disabled>
+                        {belowFloor ? "Held for approval · PQ-2148" : `Quote PQ-2147 sent · expires in ${validity} h`}
+                      </button>
+                    )}
+                    {sent && !belowFloor && (
+                      <button className="linkbtn" onClick={() => setScreen("buyer")}>Preview the customer link →</button>
+                    )}
+                    {sent && belowFloor && (
+                      <button className="linkbtn" onClick={() => setScreen("approve")}>View in approval queue →</button>
+                    )}
+                    <div className="cta-note">
+                      Every figure traces to a published source. Drafting AI writes the cover note — it never touches the numbers.
+                    </div>
+                  </div>
+                </section>
+              </div>
+            </div>
+          </>
+        )}
+
+        {/* ════════════ BRIEFINGS ════════════ */}
+        {screen === "brief" && (
+          <>
+            <div className="topbar">
+              <h1 className="h1">Client briefings</h1>
+              <span className="topmeta">Friday, June 12 · sent 06:31 PT under your brand</span>
+            </div>
+            <div className="screen">
+              <div className="stats">
+                <div className="stat"><div className="v">104</div><div className="lbl">Briefings sent</div></div>
+                <div className="stat"><div className="v">49 <em>· 47%</em></div><div className="lbl">Opened</div></div>
+                <div className="stat"><div className="v">11</div><div className="lbl">Line-item clicks</div></div>
+                <div className="stat"><div className="v">3</div><div className="lbl">Inquiries started</div></div>
+              </div>
+
+              <div className="held" role="alert">
+                <span><b>1 briefing held.</b> Ocean surcharge updated 09:12 — after approval, before send. Numbers refreshed; review before it goes out.</span>
+                <button>Review held briefing</button>
+              </div>
+
+              <div className="today">
+                <div className="today-head">
+                  <h3>Today’s briefing — verified data, your brand</h3>
+                  <span className="pill sentp">Sent 06:31</span>
+                </div>
+                <p>
+                  Covered for each client, filtered to the grades they buy: <b>Section 122 adjustment effective Jun 15</b> with
+                  per-grade landed-cost impact, crude at an 8-week low on the draft peace deal, and freight surcharge
+                  status by lane. Sources stamped on every figure: <span className="mono">HTSUS Rev.4 · FR 2026-10571</span>.{" "}
+                  <button className="getq" onClick={() => setScreen("email")}>See what Wei Chen received →</button>
+                </p>
+              </div>
+
+              <div className="lbl" style={{ marginBottom: 10 }}>Who’s warm today — call in this order</div>
+              {WARM.map((w) => (
+                <div className="wrow" key={w.id}>
+                  <div className="wleft">
+                    <span className={`dot ${w.heat}`} aria-hidden="true" />
+                    <div>
+                      <div className="wname">{w.who}</div>
+                      <div className="worg">{w.org}</div>
+                      <div className={`wsig ${w.heat === "cool" ? "dim" : ""}`}>{w.sig}</div>
+                    </div>
+                  </div>
+                  <button className="qbtn" onClick={() => startQuoteFor(w)}>
+                    Start quote → {PRODUCTS[w.product].name.split(" ·")[0]}
+                  </button>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+
+        {/* ════════════ APPROVALS ════════════ */}
+        {screen === "approve" && (
+          <>
+            <div className="topbar">
+              <h1 className="h1">Approvals</h1>
+              <span className="topmeta">Manager view · floors and limits set by you, enforced everywhere</span>
+            </div>
+            <div className="screen">
+              <div className="stats">
+                <div className="stat"><div className="v">12</div><div className="lbl">Open quotes</div></div>
+                <div className="stat"><div className="v">$1.84M</div><div className="lbl">Committed exposure</div></div>
+                <div className="stat"><div className="v">3</div><div className="lbl">Expiring today</div></div>
+                <div className="stat"><div className="v">{pendingCount}</div><div className="lbl">Pending approvals</div></div>
+              </div>
+
+              {!alertResolved ? (
+                <div className="held" role="alert">
+                  <span>
+                    <b>Rate change.</b> §122 stopgap adjusted 15.0% → 12.5%, published 09:12, effective Mon Jun 15
+                    <span className="mono" style={{ fontSize: 10.5 }}> · FR 2026-11248</span>. 4 open quotes carry superseded rates.
+                  </span>
+                  <button onClick={() => setAlertResolved(true)}>Reissue 4 quotes with current rates</button>
+                </div>
+              ) : (
+                <div className="held green" role="status">
+                  <span><b>Done.</b> 4 quotes reissued as v2 with Jun 15 rates · customers notified · audit trail updated.</span>
+                </div>
+              )}
+
+              {/* PQ-2148 — margin floor */}
+              <div className="acard">
+                <div className="ahead">
+                  <span className="aid">PQ-2148 · Golden State Packaging</span>
+                  {appr[2148] === "pending" && <span className="pill pend">Awaiting approval</span>}
+                  {appr[2148] === "approved" && <span className="pill ok">Approved · sent</span>}
+                  {appr[2148] === "rejected" && <span className="pill rej">Rejected · rep notified</span>}
+                </div>
+                <div className="ameta">
+                  PP Homopolymer Raffia · 102 MT · offer <b>1,995 $/MT DDP</b> · landed 1,915 $/MT ·
+                  margin <b style={{ color: "var(--hot)" }}>4.0%</b> vs 6.0% floor · rep A. Kazi · requested 10:21 AM
+                </div>
+                <div className="areason">
+                  Rep note: matching a competing offer on the table; customer signals a Q3 volume commitment if we hold this price.
+                </div>
+                {appr[2148] === "pending" && (
+                  <>
+                    <textarea className="cmt" placeholder="Decision comment (logged on the quote record)"
+                      value={comment} onChange={(e) => setComment(e.target.value)} />
+                    <div className="abtns">
+                      <button className="abtn" onClick={() => setAppr((s) => ({ ...s, 2148: "approved" }))}>Approve and send</button>
+                      <button className="abtn sec" onClick={() => setAppr((s) => ({ ...s, 2148: "rejected" }))}>Reject</button>
+                    </div>
+                  </>
+                )}
+              </div>
+
+              {/* PQ-2151 — exposure limit */}
+              <div className="acard">
+                <div className="ahead">
+                  <span className="aid">PQ-2151 · Maverick Containers</span>
+                  {appr[2151] === "pending" && <span className="pill pend">Awaiting approval</span>}
+                  {appr[2151] === "approved" && <span className="pill ok">Approved · sent</span>}
+                  {appr[2151] === "rejected" && <span className="pill rej">Rejected · rep notified</span>}
+                </div>
+                <div className="ameta">
+                  LLDPE Film C4 · 408 MT · offer <b>2,210 $/MT DDP</b> · margin 7.1% (clears floor) ·
+                  deal total <b>$901,680</b> exceeds the $750k single-quote exposure limit · rep S. Lin · requested 9:48 AM
+                </div>
+                <div className="areason">
+                  Rep note: customer consolidating two suppliers into one annual contract; first tranche of four.
+                </div>
+                {appr[2151] === "pending" && (
+                  <div className="abtns">
+                    <button className="abtn" onClick={() => setAppr((s) => ({ ...s, 2151: "approved" }))}>Approve and send</button>
+                    <button className="abtn sec" onClick={() => setAppr((s) => ({ ...s, 2151: "rejected" }))}>Reject</button>
+                  </div>
+                )}
+              </div>
+
+              <div className="note">
+                Nothing leaves the building below floor or over limit without a decision logged here — and every decision
+                lands on the quote’s audit trail.
+              </div>
+            </div>
+          </>
+        )}
+
+        {/* ════════════ BUYER QUOTE LINK ════════════ */}
+        {screen === "buyer" && (
+          <>
+            <div className="topbar">
+              <h1 className="h1">Quote link — customer view</h1>
+              <span className="topmeta">What Golden State Packaging sees · no PolyQuote branding, no login</span>
+            </div>
+            <div className="screen">
+              <div className="frame">
+                <div className="framebar">
+                  <div className="fdots"><span /><span /><span /></div>
+                  <div className="furl mono">quotes.pacificrimpolymers.com/PQ-2147</div>
+                </div>
+                <div className="sellerhead">
+                  <span className="sellermark"><i />Pacific Rim Polymers</span>
+                  <span className="mono" style={{ fontSize: 10.5, color: "var(--mut)" }}>QUOTE PQ-2147 · ISSUED JUN 12 2026 11:02 PT</span>
+                </div>
+                <div className="qbody">
+                  <div className="lbl">This quote is valid for</div>
+                  <div className="countdown">
+                    <span className={`cd mono ${rH < 12 ? "low" : ""}`}>
+                      {String(rH).padStart(2, "0")}:{String(rM).padStart(2, "0")}:{String(rS).padStart(2, "0")}
+                    </span>
+                    <span style={{ fontSize: 12.5, color: "var(--mut)" }}>expires Sun, Jun 14 · 11:02 AM PT — prices locked until then</span>
+                  </div>
+
+                  <div className="buyrow"><span>Product</span><span className="vl">PP Homopolymer · Raffia (HTS 3902.10.00)</span></div>
+                  <div className="buyrow"><span>Quantity</span><span className="vl">102 MT · 4 × 40' FCL</span></div>
+                  <div className="buyrow"><span>Unit price · DDP Ontario, CA</span><span className="vl">2,080 $/MT</span></div>
+                  <div className="buyrow"><span>Payment terms</span><span className="vl">Net 30</span></div>
+                  <div className="buyrow"><span>Lead time</span><span className="vl">28–34 days door-to-door</span></div>
+                  <div className="buyrow total"><span>Total</span><span>$212,160</span></div>
+
+                  <div className="dutynote">
+                    <b>All US import duties are included and paid by seller</b> — MFN 6.5% + Section 301 25% + Section 122
+                    stopgap 15%, at rates published as of Jun 12 (<span className="mono">HTSUS Rev.4 · FR 2026-10571</span>).
+                    A §122 adjustment takes effect Jun 15; accepting before expiry locks today’s terms either way.
+                  </div>
+
+                  <div className="buybtns">
+                    {!accepted ? (
+                      <button className="buybtn" onClick={() => { setAccepted(true); setRefreshAsked(false); }}>Accept quote</button>
+                    ) : (
+                      <button className="buybtn done" disabled>Accepted — Pacific Rim Polymers has been notified</button>
+                    )}
+                    {!accepted && (!refreshAsked ? (
+                      <button className="buybtn sec" onClick={() => setRefreshAsked(true)}>Request refreshed quote</button>
+                    ) : (
+                      <button className="buybtn sec" disabled>Refresh requested — your rep will reissue</button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+              <p className="note">
+                Demo notes: the countdown is live — at zero this page locks and offers a one-tap refresh request instead.
+                The buyer sees the duty context but never the seller’s FOB cost or margin. Accepting notifies the rep and,
+                in production, pushes a sales order to the ERP.
+              </p>
+            </div>
+          </>
+        )}
+
+        {/* ════════════ BRIEFING EMAIL ════════════ */}
+        {screen === "email" && (
+          <>
+            <div className="topbar">
+              <h1 className="h1">Briefing email — customer view</h1>
+              <span className="topmeta">Wei Chen’s copy · filtered to the grades he buys · sent 06:31 PT</span>
+            </div>
+            <div className="screen">
+              <div className="frame">
+                <div className="mailhead">
+                  <div><b>From</b>&nbsp;&nbsp;Amlan Kazi · Pacific Rim Polymers &lt;updates@pacificrimpolymers.com&gt;</div>
+                  <div><b>To</b>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;w.chen@gspack.com</div>
+                  <div><b>Subject</b>&nbsp;&nbsp;Your polymer brief — §122 change Monday, PP &amp; HDPE impact · Jun 12</div>
+                </div>
+                <div className="sellerhead" style={{ borderBottom: "1px solid var(--line)" }}>
+                  <span className="sellermark"><i />Pacific Rim Polymers</span>
+                  <span className="mono" style={{ fontSize: 10.5, color: "var(--mut)" }}>DAILY BRIEF · FRI JUN 12 2026</span>
+                </div>
+                <div className="mailbody">
+                  <p className="hi">
+                    Wei — three things on your grades today. The big one: the §122 stopgap drops Monday,
+                    which moves your PP landed cost. Details below, numbers sourced.
+                  </p>
+
+                  <div className="mline">
+                    <div className="mline-h">
+                      <b>PP Homopolymer · Raffia</b>
+                      <span className="delta down">landed −29.50 $/MT from Mon</span>
+                    </div>
+                    <p>
+                      §122 stopgap adjusted 15.0% → 12.5%, effective Jun 15
+                      <span className="mono"> (FR 2026-11248)</span>. Quotes accepted before Sunday lock current
+                      terms; from Monday, new landed reflects the lower stack.
+                    </p>
+                    <button className="getq" onClick={() => quoteFromEmail("pp")}>Get a firm quote →</button>
+                  </div>
+
+                  <div className="mline">
+                    <div className="mline-h">
+                      <b>HDPE · Blow Molding</b>
+                      <span className="delta down">benchmark −12 $/MT w/w</span>
+                    </div>
+                    <p>
+                      CFR FE Asia easing as crude hit an 8-week low on the draft US–Iran framework.
+                      If the deal signs this weekend, expect further softening into July.
+                    </p>
+                    <button className="getq" onClick={() => quoteFromEmail("hdpe")}>Get a firm quote →</button>
+                  </div>
+
+                  <div className="mline">
+                    <div className="mline-h">
+                      <b>Ocean freight · CN → USWC</b>
+                      <span className="delta flat">surcharge unchanged · 38 $/MT</span>
+                    </div>
+                    <p>Hormuz rerouting premium holds this week; carriers signal a review if the framework is signed.</p>
+                  </div>
+
+                  <div className="mailfoot">
+                    Rates as of Jun 12 2026 06:00 PT · <span className="mono">HTSUS Rev.4 · FR 2026-10571 · FR 2026-11248</span><br />
+                    You receive this because you buy PP and HDPE from us. Update preferences · Unsubscribe<br />
+                    Pacific Rim Polymers · 2nd St, Long Beach, CA
+                  </div>
+                </div>
+              </div>
+              <p className="note">
+                Demo notes: every open and line-item click on this email feeds the “who’s warm today” list — Wei’s 7:42 AM
+                click on the PP line is why he’s ranked first. “Get a firm quote” drops the rep into the builder, pre-filled.
+                The AI drafts the prose; the numbers come only from the verified rate engine.
+              </p>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
